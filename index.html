@@ -163,16 +163,10 @@
                         apiKey: "AIzaSyDlr6sZB06BKRYEd1fnYuM_h0icAzmrOkg",
                         authDomain: "workout-program-f681e.firebaseapp.com",
                         projectId: "workout-program-f681e",
-                        storageBucket: "workout-program-f681e.firebasestorage.app",
+                        storageBucket: "workout-program-f681e.appspot.com",
                         messagingSenderId: "953988180606",
                         appId: "1:953988180606:web:f26f8124f59c0b39cec62f"
                     };
-                    
-                    if (firebaseConfig.apiKey.startsWith("YOUR_")) {
-                        setError("Firebase configuration is missing.");
-                        setLoading(false);
-                        return;
-                    }
 
                     const app = initializeApp(firebaseConfig);
                     const auth = getAuth(app);
@@ -314,7 +308,7 @@
                         <button onClick={onSignOut} className="bg-red-500 text-white font-semibold py-2 px-4 rounded-lg hover:bg-red-600 transition-colors">Sign Out</button>
                     </div>
                     <div className="bg-white p-6 rounded-xl shadow-md space-y-4">
-                        <p className="text-lg text-center">Your next workout is <strong>{currentWorkout.name}</strong>.</p>
+                        <p className="text-lg text-center">Your next workout is <strong>{currentWorkout?.name || 'No workout selected'}</strong>.</p>
                         <button onClick={() => alert("Start workout not implemented yet")} className="w-full bg-indigo-600 text-white font-semibold py-3 px-6 rounded-lg shadow-lg hover:bg-indigo-700 transition-colors">
                             Start Workout
                         </button>
