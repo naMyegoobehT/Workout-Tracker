@@ -31,6 +31,10 @@
         input[type="number"] {
             -moz-appearance: textfield;
         }
+        .dragging {
+            opacity: 0.5;
+            background: #cce5ff;
+        }
     </style>
 </head>
 <body class="bg-gray-100">
@@ -44,27 +48,33 @@
         import { getFirestore, doc, onSnapshot, setDoc, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
         // React is available globally from the script tags in the <head>
-        const { useState, useEffect } = React;
+        const { useState, useEffect, useRef } = React;
 
         // --- Default Data ---
-        const getDefaultProgram = () => ({
-            workoutA: {
-                name: 'Workout A',
-                exercises: [
-                    { name: 'Vertical Leg Press', sets: 5, reps: 5, progressionIncrement: 5, deloadFrequency: 3, deloadPercentage: 10, baseWeight: 45, startingWeight: 45, consecutiveFailures: 0 },
-                    { name: 'Machine Chest Press', sets: 5, reps: 5, progressionIncrement: 2.5, deloadFrequency: 3, deloadPercentage: 10, baseWeight: 45, startingWeight: 45, consecutiveFailures: 0 },
-                    { name: 'Seated Cable Row', sets: 5, reps: 5, progressionIncrement: 2.5, deloadFrequency: 3, deloadPercentage: 10, baseWeight: 45, startingWeight: 45, consecutiveFailures: 0 },
-                ]
-            },
-            workoutB: {
-                name: 'Workout B',
-                exercises: [
-                    { name: 'Vertical Leg Press', sets: 5, reps: 5, progressionIncrement: 5, deloadFrequency: 3, deloadPercentage: 10, baseWeight: 45, startingWeight: 45, consecutiveFailures: 0 },
-                    { name: 'Machine Shoulder Press', sets: 5, reps: 5, progressionIncrement: 2.5, deloadFrequency: 3, deloadPercentage: 10, baseWeight: 45, startingWeight: 45, consecutiveFailures: 0 },
-                    { name: 'Hamstring Curls', sets: 3, reps: 8, progressionIncrement: 2.5, deloadFrequency: 3, deloadPercentage: 10, baseWeight: 45, startingWeight: 45, consecutiveFailures: 0 },
-                ]
-            },
-            currentWorkoutType: 'A'
+        const createDefaultProgram = () => ({
+            id: `program_${Date.now()}`,
+            name: 'Default Program',
+            workouts: [
+                {
+                    id: `workout_${Date.now()}_a`,
+                    name: 'Workout A',
+                    exercises: [
+                        { id: `ex_${Date.now()}_1`, name: 'Vertical Leg Press', sets: 5, reps: 5, progressionIncrement: 5, deloadFrequency: 3, deloadPercentage: 10, baseWeight: 45, startingWeight: 45, consecutiveFailures: 0 },
+                        { id: `ex_${Date.now()}_2`, name: 'Machine Chest Press', sets: 5, reps: 5, progressionIncrement: 2.5, deloadFrequency: 3, deloadPercentage: 10, baseWeight: 45, startingWeight: 45, consecutiveFailures: 0 },
+                        { id: `ex_${Date.now()}_3`, name: 'Seated Cable Row', sets: 5, reps: 5, progressionIncrement: 2.5, deloadFrequency: 3, deloadPercentage: 10, baseWeight: 45, startingWeight: 45, consecutiveFailures: 0 },
+                    ]
+                },
+                {
+                    id: `workout_${Date.now()}_b`,
+                    name: 'Workout B',
+                    exercises: [
+                        { id: `ex_${Date.now()}_4`, name: 'Vertical Leg Press', sets: 5, reps: 5, progressionIncrement: 5, deloadFrequency: 3, deloadPercentage: 10, baseWeight: 45, startingWeight: 45, consecutiveFailures: 0 },
+                        { id: `ex_${Date.now()}_5`, name: 'Machine Shoulder Press', sets: 5, reps: 5, progressionIncrement: 2.5, deloadFrequency: 3, deloadPercentage: 10, baseWeight: 45, startingWeight: 45, consecutiveFailures: 0 },
+                        { id: `ex_${Date.now()}_6`, name: 'Hamstring Curls', sets: 3, reps: 8, progressionIncrement: 2.5, deloadFrequency: 3, deloadPercentage: 10, baseWeight: 45, startingWeight: 45, consecutiveFailures: 0 },
+                    ]
+                }
+            ],
+            currentWorkoutIndex: 0
         });
 
         const AuthPage = ({ auth }) => {
@@ -147,14 +157,13 @@
             const [error, setError] = useState(null);
             const [firebase, setFirebase] = useState({ auth: null, db: null });
 
-            // --- Firebase Initialization and Auth State Listener ---
             useEffect(() => {
                 try {
                     const firebaseConfig = {
                         apiKey: "AIzaSyDlr6sZB06BKRYEd1fnYuM_h0icAzmrOkg",
                         authDomain: "workout-program-f681e.firebaseapp.com",
                         projectId: "workout-program-f681e",
-                        storageBucket: "workout-program-f681e.appspot.com",
+                        storageBucket: "workout-program-f681e.firebasestorage.app",
                         messagingSenderId: "953988180606",
                         appId: "1:953988180606:web:f26f8124f59c0b39cec62f"
                     };
@@ -173,9 +182,7 @@
 
                     const unsubscribe = onAuthStateChanged(auth, (user) => {
                         setUser(user);
-                        if (!user) {
-                            setLoading(false); // If no user, stop loading, show AuthPage
-                        }
+                        if (!user) setLoading(false);
                     });
                     return () => unsubscribe();
                 } catch (e) {
@@ -185,19 +192,40 @@
                 }
             }, []);
 
-            // --- Firestore Data Sync ---
             useEffect(() => {
                 if (!user || !firebase.db) {
-                    if(user === null) setLoading(false);
+                    if (user === null) setLoading(false);
                     return;
-                };
+                }
 
                 setLoading(true);
                 const docRef = doc(firebase.db, `users/${user.uid}/workoutData`, "data");
 
                 const unsubscribe = onSnapshot(docRef, (docSnap) => {
                     if (docSnap.exists()) {
-                        const data = docSnap.data();
+                        let data = docSnap.data();
+                        
+                        // --- One-Time Data Migration ---
+                        if (data.program && !data.programs) {
+                            console.log("Migrating old data structure...");
+                            const legacyProgram = createDefaultProgram();
+                            legacyProgram.name = "My Legacy Program";
+                            legacyProgram.workouts[0].exercises = data.program.workoutA.exercises.map((ex, i) => ({...ex, id: `ex_${Date.now()}_${i}`}));
+                            legacyProgram.workouts[1].exercises = data.program.workoutB.exercises.map((ex, i) => ({...ex, id: `ex_${Date.now()}_b_${i}`}));
+                            
+                            const newData = {
+                                programs: [legacyProgram],
+                                activeProgramId: legacyProgram.id,
+                                history: data.history || []
+                            };
+                            
+                            setDoc(docRef, newData).then(() => {
+                                setAppData(newData);
+                                setLoading(false);
+                            });
+                            return; // Exit early to avoid processing old data structure
+                        }
+
                         if (data.history) {
                             data.history.forEach(item => {
                                 if (item.date && typeof item.date.toDate === 'function') {
@@ -207,8 +235,10 @@
                         }
                         setAppData(data);
                     } else {
+                        const defaultProgram = createDefaultProgram();
                         const initialData = {
-                            program: getDefaultProgram(),
+                            programs: [defaultProgram],
+                            activeProgramId: defaultProgram.id,
                             history: []
                         };
                         setDoc(docRef, initialData).then(() => setAppData(initialData));
@@ -223,153 +253,42 @@
                 return () => unsubscribe();
             }, [user, firebase.db]);
 
-            // --- State Recalculation Logic ---
-            const recalculateProgramState = (program, history) => {
-                const newProgram = JSON.parse(JSON.stringify(program));
-                Object.keys(newProgram).filter(k => k.startsWith('workout')).forEach(workoutKey => {
-                    newProgram[workoutKey].exercises.forEach(ex => {
-                        ex.startingWeight = ex.baseWeight;
-                        ex.consecutiveFailures = 0;
-                    });
-                });
-                newProgram.currentWorkoutType = 'A';
-
-                history.forEach(workout => {
-                    workout.exercises.forEach(loggedExercise => {
-                        const success = loggedExercise.reps.every(rep => {
-                            const programEx = newProgram[workout.workoutType === 'A' ? 'workoutA' : 'workoutB'].exercises.find(e => e.name === loggedExercise.name);
-                            return programEx && rep >= programEx.reps;
-                        });
-
-                        Object.keys(newProgram).filter(k => k.startsWith('workout')).forEach(workoutKey => {
-                            const exerciseToUpdate = newProgram[workoutKey].exercises.find(e => e.name === loggedExercise.name);
-                            if (exerciseToUpdate) {
-                                if (success) {
-                                    exerciseToUpdate.startingWeight += exerciseToUpdate.progressionIncrement;
-                                    exerciseToUpdate.consecutiveFailures = 0;
-                                } else {
-                                    exerciseToUpdate.consecutiveFailures = (exerciseToUpdate.consecutiveFailures || 0) + 1;
-                                    if (exerciseToUpdate.consecutiveFailures >= exerciseToUpdate.deloadFrequency) {
-                                        exerciseToUpdate.startingWeight = Math.round(exerciseToUpdate.startingWeight * (1 - exerciseToUpdate.deloadPercentage / 100));
-                                        exerciseToUpdate.consecutiveFailures = 0;
-                                    }
-                                }
-                            }
-                        });
-                    });
-                    newProgram.currentWorkoutType = workout.workoutType === 'A' ? 'B' : 'A';
-                });
-                return newProgram;
-            };
-
-            const updateFirestore = async (data) => {
+            const updateFirestore = async (newAppData) => {
                 if (!user) return;
                 const docRef = doc(firebase.db, `users/${user.uid}/workoutData`, "data");
-                await setDoc(docRef, data, { merge: true });
+                await setDoc(docRef, newAppData);
             };
 
-            const navigateTo = (page) => setCurrentPage(page);
-
-            const startWorkout = () => {
-                const currentExercises = appData.program.currentWorkoutType === 'A' ? appData.program.workoutA.exercises : appData.program.workoutB.exercises;
-                const initialProgress = currentExercises.reduce((acc, exercise) => {
-                    acc[exercise.name] = {
-                        weight: exercise.startingWeight,
-                        reps: Array(exercise.sets).fill('')
-                    };
-                    return acc;
-                }, {});
-                setWorkoutProgress(initialProgress);
-                setBodyweight('');
-                navigateTo('logWorkout');
+            const handleProgramUpdate = (newPrograms) => {
+                const newAppData = { ...appData, programs: newPrograms };
+                updateFirestore(newAppData);
             };
 
-            const handleRepChange = (exerciseName, setIndex, newReps) => {
-                setWorkoutProgress(prev => ({
-                    ...prev,
-                    [exerciseName]: {
-                        ...prev[exerciseName],
-                        reps: prev[exerciseName].reps.map((r, i) => i === setIndex ? newReps : r)
-                    }
-                }));
+            const setActiveProgram = (programId) => {
+                const newAppData = { ...appData, activeProgramId: programId };
+                updateFirestore(newAppData);
             };
 
-            const handleLogWorkout = async () => {
-                const completedWorkout = {
-                    date: new Date(),
-                    workoutType: appData.program.currentWorkoutType,
-                    bodyweight: bodyweight || null,
-                    exercises: Object.entries(workoutProgress).map(([name, data]) => ({
-                        name,
-                        weight: data.weight,
-                        reps: data.reps.map(r => r === '' ? 0 : parseInt(r, 10))
-                    })),
-                };
+            const activeProgram = appData?.programs.find(p => p.id === appData.activeProgramId);
 
-                const updatedHistory = [...appData.history, completedWorkout];
-                const recalculatedProgram = recalculateProgramState(appData.program, updatedHistory);
-                
-                await updateFirestore({ history: updatedHistory, program: recalculatedProgram });
-
-                setWorkoutProgress({});
-                setBodyweight('');
-                navigateTo('history');
-            };
-
-            const handleDeleteWorkout = async (workoutIndex) => {
-                if (window.confirm('Are you sure you want to delete this workout? This will recalculate your current progression.')) {
-                    const updatedHistory = appData.history.filter((_, i) => i !== workoutIndex);
-                    const recalculatedProgram = recalculateProgramState(appData.program, updatedHistory);
-                    await updateFirestore({ history: updatedHistory, program: recalculatedProgram });
-                }
-            };
+            if (loading) return <div className="flex justify-center items-center h-screen"><div className="text-xl text-gray-500">Loading...</div></div>;
+            if (!user) return <AuthPage auth={firebase.auth} />;
+            if (error) return <div className="flex justify-center items-center h-screen"><div className="text-xl text-red-500 bg-red-100 p-8 rounded-lg">{error}</div></div>;
+            if (!appData || !activeProgram) return <div className="flex justify-center items-center h-screen"><div className="text-xl text-gray-500">Initializing Your Data...</div></div>;
             
-            const handleProgramUpdate = async (newProgram) => {
-                 const recalculatedProgram = recalculateProgramState(newProgram, appData.history);
-                 await updateFirestore({ program: recalculatedProgram });
-            };
-
             const handleSignOut = async () => {
                 await signOut(firebase.auth);
                 setAppData(null);
                 setCurrentPage('home');
             };
 
-            if (loading) {
-                return <div className="flex justify-center items-center h-screen"><div className="text-xl text-gray-500">Loading...</div></div>;
-            }
-
-            if (!user) {
-                return <AuthPage auth={firebase.auth} />;
-            }
-            
-            if (error) {
-                return <div className="flex justify-center items-center h-screen"><div className="text-xl text-red-500 bg-red-100 p-8 rounded-lg">{error}</div></div>;
-            }
-            
-            if (!appData) {
-                return <div className="flex justify-center items-center h-screen"><div className="text-xl text-gray-500">Initializing Your Data...</div></div>;
-            }
-
             const renderContent = () => {
                 switch (currentPage) {
-                    case 'setup':
-                        return <ProgramSetupPage program={appData.program} onProgramUpdate={handleProgramUpdate} navigateTo={navigateTo} />;
-                    case 'logWorkout':
-                        return <LogWorkoutPage
-                            program={appData.program}
-                            workoutProgress={workoutProgress}
-                            bodyweight={bodyweight}
-                            setBodyweight={setBodyweight}
-                            onRepChange={handleRepChange}
-                            onLogWorkout={handleLogWorkout}
-                            navigateTo={navigateTo}
-                        />;
-                    case 'history':
-                        return <HistoryPage history={appData.history} onDeleteWorkout={handleDeleteWorkout} navigateTo={navigateTo} />;
-                    case 'home':
+                    case 'programs':
+                        return <ProgramsListPage programs={appData.programs} activeProgramId={appData.activeProgramId} onUpdate={handleProgramUpdate} onSetActive={setActiveProgram} navigateTo={navigateTo} />;
+                    // Add more cases for editing specific programs/workouts later
                     default:
-                        return <HomePage program={appData.program} onStartWorkout={startWorkout} navigateTo={navigateTo} onSignOut={handleSignOut} />;
+                        return <HomePage program={activeProgram} onSignOut={handleSignOut} navigateTo={navigateTo} />;
                 }
             };
 
@@ -383,187 +302,168 @@
         }
         
         // --- Page Components ---
-        const HomePage = ({ program, onStartWorkout, navigateTo, onSignOut }) => (
-            <div className="space-y-6">
-                <div className="flex justify-between items-center">
-                    <h2 className="text-3xl font-bold text-gray-800">Welcome!</h2>
-                    <button onClick={onSignOut} className="bg-red-500 text-white font-semibold py-2 px-4 rounded-lg hover:bg-red-600 transition-colors">Sign Out</button>
-                </div>
-                <div className="bg-white p-6 rounded-xl shadow-md space-y-4">
-                    <p className="text-lg text-center">Your next workout is <strong>Workout {program.currentWorkoutType}</strong>.</p>
-                    <button onClick={onStartWorkout} className="w-full bg-indigo-600 text-white font-semibold py-3 px-6 rounded-lg shadow-lg hover:bg-indigo-700 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
-                        Start Workout {program.currentWorkoutType}
-                    </button>
-                </div>
-                <div className="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4">
-                    <button onClick={() => navigateTo('setup')} className="w-full bg-gray-200 text-gray-800 font-semibold py-3 px-6 rounded-lg hover:bg-gray-300 transition-colors">Program Setup</button>
-                    <button onClick={() => navigateTo('history')} className="w-full bg-gray-200 text-gray-800 font-semibold py-3 px-6 rounded-lg hover:bg-gray-300 transition-colors">View History</button>
-                </div>
-                <p className="text-sm text-center text-gray-500">Data is synced to the cloud in real-time.</p>
-            </div>
-        );
-
-        const LogWorkoutPage = ({ program, workoutProgress, bodyweight, setBodyweight, onRepChange, onLogWorkout, navigateTo }) => {
-            const currentExercises = program.currentWorkoutType === 'A' ? program.workoutA.exercises : program.workoutB.exercises;
-            
-            const allSetsCompleted = currentExercises.every(ex => {
-                const progress = workoutProgress[ex.name];
-                return progress && progress.reps.every(r => r !== '' && r !== null);
-            });
-
+        const HomePage = ({ program, onSignOut, navigateTo }) => {
+            const currentWorkout = program.workouts[program.currentWorkoutIndex || 0];
             return (
                 <div className="space-y-6">
-                    <h2 className="text-3xl font-bold text-gray-800">Log Workout {program.currentWorkoutType}</h2>
-                    <div className="bg-white p-6 rounded-xl shadow-md space-y-6">
+                    <div className="flex justify-between items-center">
                         <div>
-                            <label htmlFor="bodyweight" className="block text-sm font-medium text-gray-700">Bodyweight (lbs)</label>
-                            <input
-                                type="number"
-                                id="bodyweight"
-                                value={bodyweight}
-                                onChange={(e) => setBodyweight(e.target.value)}
-                                placeholder="e.g., 180"
-                                className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2"
-                            />
+                            <h2 className="text-3xl font-bold text-gray-800">Welcome!</h2>
+                            <p className="text-gray-600">Active Program: <strong>{program.name}</strong></p>
                         </div>
-                        {currentExercises.map((exercise, i) => (
-                            <div key={i} className="bg-gray-50 p-4 rounded-lg space-y-3">
-                                <h3 className="font-semibold text-lg">{exercise.name}</h3>
-                                <p className="text-sm text-gray-600">Target: {exercise.sets} sets of {exercise.reps} reps at {workoutProgress[exercise.name]?.weight || exercise.startingWeight} lbs</p>
-                                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
-                                    {Array.from({ length: exercise.sets }).map((_, setIndex) => (
-                                        <div key={setIndex} className="flex items-center space-x-2">
-                                            <label className="text-sm font-medium text-gray-700 whitespace-nowrap">Set {setIndex + 1}:</label>
-                                            <input
-                                                type="number"
-                                                value={workoutProgress[exercise.name]?.reps[setIndex] || ''}
-                                                onChange={(e) => onRepChange(exercise.name, setIndex, e.target.value)}
-                                                placeholder={exercise.reps.toString()}
-                                                className="w-full rounded-lg border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2 text-center"
-                                            />
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        ))}
-                        <button
-                            onClick={onLogWorkout}
-                            disabled={!allSetsCompleted}
-                            className={`w-full font-semibold py-3 px-6 rounded-lg shadow-lg transition-colors ${allSetsCompleted ? 'bg-green-600 text-white hover:bg-green-700' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`}
-                        >
-                            Log Workout
+                        <button onClick={onSignOut} className="bg-red-500 text-white font-semibold py-2 px-4 rounded-lg hover:bg-red-600 transition-colors">Sign Out</button>
+                    </div>
+                    <div className="bg-white p-6 rounded-xl shadow-md space-y-4">
+                        <p className="text-lg text-center">Your next workout is <strong>{currentWorkout.name}</strong>.</p>
+                        <button onClick={() => alert("Start workout not implemented yet")} className="w-full bg-indigo-600 text-white font-semibold py-3 px-6 rounded-lg shadow-lg hover:bg-indigo-700 transition-colors">
+                            Start Workout
                         </button>
                     </div>
-                    <button onClick={() => navigateTo('home')} className="w-full bg-gray-200 text-gray-800 font-semibold py-3 px-6 rounded-lg hover:bg-gray-300 transition-colors">Cancel</button>
+                    <div className="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4">
+                        <button onClick={() => navigateTo('programs')} className="w-full bg-gray-200 text-gray-800 font-semibold py-3 px-6 rounded-lg hover:bg-gray-300 transition-colors">Manage Programs</button>
+                        <button onClick={() => alert("History not implemented yet")} className="w-full bg-gray-200 text-gray-800 font-semibold py-3 px-6 rounded-lg hover:bg-gray-300 transition-colors">View History</button>
+                    </div>
+                    <p className="text-sm text-center text-gray-500">Data is synced to the cloud in real-time.</p>
                 </div>
             );
         };
-        
-        const HistoryPage = ({ history, onDeleteWorkout, navigateTo }) => (
-            <div className="space-y-6">
-                <h2 className="text-3xl font-bold text-gray-800">Workout History</h2>
-                <div className="bg-white p-6 rounded-xl shadow-md space-y-4">
-                    {history.length > 0 ? [...history].reverse().map((workout, i) => {
-                        const originalIndex = history.length - 1 - i;
-                        return(
-                            <div key={originalIndex} className="bg-gray-50 p-4 rounded-lg">
-                                <div className="flex justify-between items-start">
-                                    <div>
-                                        <p className="font-semibold text-lg">Workout {workout.workoutType} &middot; {workout.date.toLocaleDateString()}</p>
-                                        <p className="text-sm text-gray-600 mb-2">Bodyweight: {workout.bodyweight ? `${workout.bodyweight} lbs` : 'N/A'}</p>
-                                        <ul className="list-disc list-inside mt-2 space-y-1 text-sm">
-                                            {workout.exercises.map((ex, j) => (
-                                                <li key={j}>
-                                                    <span className="font-medium">{ex.name}:</span> {ex.reps.join(', ')} reps at {ex.weight} lbs
-                                                </li>
-                                            ))}
-                                        </ul>
-                                    </div>
-                                    <button onClick={() => onDeleteWorkout(originalIndex)} className="bg-red-500 text-white font-semibold py-1 px-3 rounded-lg hover:bg-red-600 transition-colors text-sm flex-shrink-0">
-                                        Delete
-                                    </button>
-                                </div>
-                            </div>
-                        )
-                    }) : <p className="text-center text-gray-500">No workouts logged yet.</p>}
-                </div>
-                <button onClick={() => navigateTo('home')} className="w-full bg-gray-200 text-gray-800 font-semibold py-3 px-6 rounded-lg hover:bg-gray-300 transition-colors">Back to Home</button>
-            </div>
-        );
-        
-        const ProgramSetupPage = ({program, onProgramUpdate, navigateTo}) => {
-            const [localProgram, setLocalProgram] = useState(JSON.parse(JSON.stringify(program)));
 
-            const handleExerciseChange = (workoutKey, exerciseIndex, field, value) => {
-                const newProgram = JSON.parse(JSON.stringify(localProgram));
-                const exercise = newProgram[workoutKey].exercises[exerciseIndex];
-                
-                const isNumericField = field !== 'name';
-                exercise[field] = isNumericField ? Number(value) : value;
+        const ProgramsListPage = ({ programs, activeProgramId, onUpdate, onSetActive, navigateTo }) => {
+            const [editingProgram, setEditingProgram] = useState(null);
 
-                setLocalProgram(newProgram);
+            const handleCreateProgram = () => {
+                const newProgramName = prompt("Enter new program name:");
+                if (newProgramName) {
+                    const newProgram = {
+                        id: `program_${Date.now()}`,
+                        name: newProgramName,
+                        workouts: [],
+                        currentWorkoutIndex: 0
+                    };
+                    onUpdate([...programs, newProgram]);
+                }
             };
             
-            const handleAddExercise = (workoutKey) => {
-                const newProgram = JSON.parse(JSON.stringify(localProgram));
-                newProgram[workoutKey].exercises.push({
-                    name: 'New Exercise', sets: 3, reps: 8, progressionIncrement: 5, 
-                    deloadFrequency: 3, deloadPercentage: 10, baseWeight: 45, consecutiveFailures: 0
-                });
-                setLocalProgram(newProgram);
-            };
-
-            const handleRemoveExercise = (workoutKey, exerciseIndex) => {
-                if (!window.confirm('Are you sure you want to remove this exercise?')) return;
-                const newProgram = JSON.parse(JSON.stringify(localProgram));
-                newProgram[workoutKey].exercises.splice(exerciseIndex, 1);
-                setLocalProgram(newProgram);
-            };
-
-            const handleSaveChanges = () => {
-                onProgramUpdate(localProgram);
-                alert('Program saved successfully!');
-                navigateTo('home');
-            };
-
-            const fieldsToEdit = ['baseWeight', 'sets', 'reps', 'progressionIncrement', 'deloadFrequency', 'deloadPercentage'];
+            if (editingProgram) {
+                return <ProgramEditPage 
+                            program={editingProgram} 
+                            onSave={(updatedProgram) => {
+                                onUpdate(programs.map(p => p.id === updatedProgram.id ? updatedProgram : p));
+                                setEditingProgram(null);
+                            }}
+                            onCancel={() => setEditingProgram(null)}
+                        />
+            }
 
             return (
                 <div className="space-y-6">
-                    <h2 className="text-3xl font-bold text-gray-800">Program Setup</h2>
-                    <div className="bg-white p-6 rounded-xl shadow-md space-y-8">
-                        {Object.keys(localProgram).filter(k => k.startsWith('workout')).sort().map(workoutKey => (
-                            <div key={workoutKey}>
-                                <div className="flex justify-between items-center pb-4 border-b mb-4">
-                                    <h3 className="text-xl font-semibold">{localProgram[workoutKey].name}</h3>
-                                    <button onClick={() => handleAddExercise(workoutKey)} className="bg-green-500 text-white font-semibold py-2 px-4 rounded-lg hover:bg-green-600 transition-colors">Add Exercise</button>
+                    <div className="flex justify-between items-center">
+                        <h2 className="text-3xl font-bold text-gray-800">Manage Programs</h2>
+                        <button onClick={() => navigateTo('home')} className="bg-gray-200 text-gray-800 font-semibold py-2 px-4 rounded-lg hover:bg-gray-300">Back to Home</button>
+                    </div>
+                    <div className="bg-white p-6 rounded-xl shadow-md space-y-4">
+                        {programs.map(program => (
+                            <div key={program.id} className="flex items-center justify-between p-4 rounded-lg bg-gray-50">
+                                <div>
+                                    <p className="font-semibold text-lg">{program.name}</p>
+                                    <p className="text-sm text-gray-500">{program.workouts.length} workouts</p>
                                 </div>
-                                <div className="space-y-4">
-                                    {localProgram[workoutKey].exercises.map((ex, i) => (
-                                        <div key={i} className="bg-gray-50 p-4 rounded-lg space-y-4">
-                                            <div className="flex justify-between items-center">
-                                                <input type="text" value={ex.name} onChange={e => handleExerciseChange(workoutKey, i, 'name', e.target.value)} className="font-semibold text-lg p-1 -m-1 rounded bg-transparent w-full" />
-                                                <button onClick={() => handleRemoveExercise(workoutKey, i)} className="bg-red-500 text-white font-semibold py-1 px-3 rounded-lg hover:bg-red-600 transition-colors text-sm flex-shrink-0 ml-4">Remove</button>
-                                            </div>
-                                            <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
-                                                {fieldsToEdit.map(field => (
-                                                    <div key={field}>
-                                                        <label className="block font-medium text-gray-700 capitalize">{field.replace(/([A-Z])/g, ' $1').trim()}</label>
-                                                        <input type="number" value={ex[field]} onChange={e => handleExerciseChange(workoutKey, i, field, e.target.value)} className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-2" />
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    ))}
+                                <div className="flex items-center space-x-2">
+                                    {program.id !== activeProgramId && (
+                                        <button onClick={() => onSetActive(program.id)} className="bg-green-500 text-white font-semibold py-1 px-3 rounded-lg hover:bg-green-600 text-sm">Set Active</button>
+                                    )}
+                                    <button onClick={() => setEditingProgram(program)} className="bg-blue-500 text-white font-semibold py-1 px-3 rounded-lg hover:bg-blue-600 text-sm">Edit</button>
+                                    <button onClick={() => {
+                                        if (confirm(`Are you sure you want to delete "${program.name}"?`)) {
+                                            if (program.id === activeProgramId) {
+                                                alert("You cannot delete the active program.");
+                                                return;
+                                            }
+                                            onUpdate(programs.filter(p => p.id !== program.id));
+                                        }
+                                    }} className="bg-red-500 text-white font-semibold py-1 px-3 rounded-lg hover:bg-red-600 text-sm">Delete</button>
                                 </div>
                             </div>
                         ))}
                     </div>
-                    <button onClick={handleSaveChanges} className="w-full bg-indigo-600 text-white font-semibold py-3 px-6 rounded-lg shadow-lg hover:bg-indigo-700 transition-colors">Save Program</button>
-                    <button onClick={() => navigateTo('home')} className="w-full bg-gray-200 text-gray-800 font-semibold py-3 px-6 rounded-lg hover:bg-gray-300 transition-colors">Back to Home</button>
+                    <button onClick={handleCreateProgram} className="w-full bg-indigo-600 text-white font-semibold py-3 px-6 rounded-lg shadow-lg hover:bg-indigo-700">Create New Program</button>
                 </div>
             );
         };
+
+        const ProgramEditPage = ({ program, onSave, onCancel }) => {
+            const [localProgram, setLocalProgram] = useState(JSON.parse(JSON.stringify(program)));
+            const dragItem = useRef();
+            const dragOverItem = useRef();
+
+            const handleDragStart = (e, position) => {
+                dragItem.current = position;
+                e.target.classList.add('dragging');
+            };
+
+            const handleDragEnter = (e, position) => {
+                dragOverItem.current = position;
+            };
+
+            const handleDrop = (e) => {
+                e.target.closest('.exercise-item').classList.remove('dragging');
+                const copyListItems = [...localProgram.workouts];
+                const dragItemContent = copyListItems[dragItem.current];
+                copyListItems.splice(dragItem.current, 1);
+                copyListItems.splice(dragOverItem.current, 0, dragItemContent);
+                dragItem.current = null;
+                dragOverItem.current = null;
+                setLocalProgram({...localProgram, workouts: copyListItems });
+            };
+
+            const handleAddWorkout = () => {
+                const workoutName = prompt("Enter new workout name:");
+                if(workoutName) {
+                    const newWorkout = {
+                        id: `workout_${Date.now()}`,
+                        name: workoutName,
+                        exercises: []
+                    };
+                    setLocalProgram({...localProgram, workouts: [...localProgram.workouts, newWorkout]});
+                }
+            };
+            
+            return (
+                <div className="space-y-6">
+                    <div className="flex justify-between items-center">
+                        <input 
+                            type="text" 
+                            value={localProgram.name} 
+                            onChange={(e) => setLocalProgram({...localProgram, name: e.target.value})}
+                            className="text-3xl font-bold text-gray-800 p-1 -m-1 rounded bg-transparent"
+                        />
+                    </div>
+                    <div className="bg-white p-6 rounded-xl shadow-md space-y-4">
+                        {localProgram.workouts.map((workout, index) => (
+                            <div 
+                                key={workout.id} 
+                                className="p-4 rounded-lg bg-gray-50 exercise-item"
+                                draggable
+                                onDragStart={(e) => handleDragStart(e, index)}
+                                onDragEnter={(e) => handleDragEnter(e, index)}
+                                onDragEnd={handleDrop}
+                                onDragOver={(e) => e.preventDefault()}
+                            >
+                                <p className="font-semibold">{workout.name}</p>
+                                <p className="text-sm text-gray-500">{workout.exercises.length} exercises</p>
+                                {/* Add edit/delete for workouts here later */}
+                            </div>
+                        ))}
+                         <button onClick={handleAddWorkout} className="w-full bg-green-500 text-white font-semibold py-2 px-4 rounded-lg hover:bg-green-600">Add Workout</button>
+                    </div>
+                    <div className="flex space-x-2">
+                         <button onClick={() => onSave(localProgram)} className="w-full bg-indigo-600 text-white font-semibold py-3 px-6 rounded-lg shadow-lg hover:bg-indigo-700">Save Changes</button>
+                         <button onClick={onCancel} className="w-full bg-gray-200 text-gray-800 font-semibold py-3 px-6 rounded-lg hover:bg-gray-300">Cancel</button>
+                    </div>
+                </div>
+            )
+        };
+
 
         // --- Render the App ---
         const container = document.getElementById('root');
