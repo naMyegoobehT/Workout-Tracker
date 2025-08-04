@@ -59,7 +59,7 @@
                     id: `workout_${Date.now()}_a`,
                     name: 'Workout A',
                     exercises: [
-                        { id: `ex_${Date.now()}_1`, name: 'Vertical Leg Press', sets: 5, reps: 5, progressionIncrement: 5, deloadFrequency: 3, deloadPercentage: 10, baseWeight: 45, startingWeight: 45, consecutiveFailures: 0 },
+                        { id: `ex_${Date.now()}_1`, name: 'Leg Press', sets: 5, reps: 5, progressionIncrement: 10, deloadFrequency: 3, deloadPercentage: 10, baseWeight: 90, startingWeight: 90, consecutiveFailures: 0 },
                         { id: `ex_${Date.now()}_2`, name: 'Machine Chest Press', sets: 5, reps: 5, progressionIncrement: 2.5, deloadFrequency: 3, deloadPercentage: 10, baseWeight: 45, startingWeight: 45, consecutiveFailures: 0 },
                         { id: `ex_${Date.now()}_3`, name: 'Seated Cable Row', sets: 5, reps: 5, progressionIncrement: 2.5, deloadFrequency: 3, deloadPercentage: 10, baseWeight: 45, startingWeight: 45, consecutiveFailures: 0 },
                     ]
@@ -68,7 +68,7 @@
                     id: `workout_${Date.now()}_b`,
                     name: 'Workout B',
                     exercises: [
-                        { id: `ex_${Date.now()}_4`, name: 'Vertical Leg Press', sets: 5, reps: 5, progressionIncrement: 5, deloadFrequency: 3, deloadPercentage: 10, baseWeight: 45, startingWeight: 45, consecutiveFailures: 0 },
+                        { id: `ex_${Date.now()}_4`, name: 'Hack Squat', sets: 5, reps: 5, progressionIncrement: 5, deloadFrequency: 3, deloadPercentage: 10, baseWeight: 90, startingWeight: 90, consecutiveFailures: 0 },
                         { id: `ex_${Date.now()}_5`, name: 'Machine Shoulder Press', sets: 5, reps: 5, progressionIncrement: 2.5, deloadFrequency: 3, deloadPercentage: 10, baseWeight: 45, startingWeight: 45, consecutiveFailures: 0 },
                         { id: `ex_${Date.now()}_6`, name: 'Hamstring Curls', sets: 3, reps: 8, progressionIncrement: 2.5, deloadFrequency: 3, deloadPercentage: 10, baseWeight: 45, startingWeight: 45, consecutiveFailures: 0 },
                     ]
@@ -76,6 +76,12 @@
             ],
             currentWorkoutIndex: 0
         });
+
+        const LoadingScreen = ({ message }) => (
+            <div className="flex justify-center items-center h-screen">
+                <div className="text-xl text-gray-500">{message}</div>
+            </div>
+        );
 
         const AuthPage = ({ auth }) => {
             const [email, setEmail] = useState('');
@@ -148,14 +154,15 @@
         };
 
         const App = () => {
-            const [user, setUser] = useState(null);
+            const [user, setUser] = useState(undefined); // undefined: checking, null: logged out, object: logged in
             const [appData, setAppData] = useState(null);
             const [currentPage, setCurrentPage] = useState('home');
             const [workoutProgress, setWorkoutProgress] = useState({});
             const [bodyweight, setBodyweight] = useState('');
-            const [loading, setLoading] = useState(true);
             const [error, setError] = useState(null);
             const [firebase, setFirebase] = useState({ auth: null, db: null });
+            const [isDataLoading, setIsDataLoading] = useState(true);
+            const [editingEntity, setEditingEntity] = useState(null); // { type: 'program'/'workout'/'history', data: {...} }
 
             useEffect(() => {
                 try {
@@ -176,30 +183,28 @@
 
                     const unsubscribe = onAuthStateChanged(auth, (user) => {
                         setUser(user);
-                        if (!user) setLoading(false);
                     });
                     return () => unsubscribe();
                 } catch (e) {
                     console.error("Firebase Init Error:", e);
                     setError("Failed to initialize the application.");
-                    setLoading(false);
                 }
             }, []);
 
             useEffect(() => {
-                if (!user || !firebase.db) {
-                    if (user === null) setLoading(false);
+                if (!user) {
+                    setAppData(null);
+                    setIsDataLoading(false);
                     return;
                 }
-
-                setLoading(true);
+                
+                setIsDataLoading(true);
                 const docRef = doc(firebase.db, `users/${user.uid}/workoutData`, "data");
 
                 const unsubscribe = onSnapshot(docRef, (docSnap) => {
                     if (docSnap.exists()) {
                         let data = docSnap.data();
                         
-                        // --- One-Time Data Migration ---
                         if (data.program && !data.programs) {
                             console.log("Migrating old data structure...");
                             const legacyProgram = createDefaultProgram();
@@ -213,11 +218,8 @@
                                 history: data.history || []
                             };
                             
-                            setDoc(docRef, newData).then(() => {
-                                setAppData(newData);
-                                setLoading(false);
-                            });
-                            return; // Exit early to avoid processing old data structure
+                            setDoc(docRef, newData);
+                            return;
                         }
 
                         if (data.history) {
@@ -235,22 +237,103 @@
                             activeProgramId: defaultProgram.id,
                             history: []
                         };
-                        setDoc(docRef, initialData).then(() => setAppData(initialData));
+                        setDoc(docRef, initialData);
                     }
-                    setLoading(false);
+                    setIsDataLoading(false);
                 }, (err) => {
                     console.error("Firestore Snapshot Error:", err);
                     setError("Failed to sync data from the database.");
-                    setLoading(false);
+                    setIsDataLoading(false);
                 });
 
                 return () => unsubscribe();
             }, [user, firebase.db]);
+            
+            const navigateTo = (page, entity = null) => {
+                setEditingEntity(entity);
+                setCurrentPage(page);
+            };
 
             const updateFirestore = async (newAppData) => {
                 if (!user) return;
                 const docRef = doc(firebase.db, `users/${user.uid}/workoutData`, "data");
                 await setDoc(docRef, newAppData);
+            };
+
+            const recalculateProgramState = (programs, history) => {
+                const newPrograms = JSON.parse(JSON.stringify(programs));
+                const exerciseStates = {};
+
+                newPrograms.forEach(p => {
+                    p.workouts.forEach(w => {
+                        w.exercises.forEach(ex => {
+                            if (!exerciseStates[ex.name]) {
+                                exerciseStates[ex.name] = {
+                                    startingWeight: ex.baseWeight,
+                                    consecutiveFailures: 0,
+                                };
+                            }
+                        });
+                    });
+                });
+
+                const sortedHistory = [...history].sort((a, b) => new Date(a.date) - new Date(b.date));
+                
+                sortedHistory.forEach(workoutEntry => {
+                    const programForHistory = newPrograms.find(p => p.id === workoutEntry.programId);
+                    if (!programForHistory) return;
+
+                    const workoutForHistory = programForHistory.workouts.find(w => w.id === workoutEntry.workoutId);
+                    if (!workoutForHistory) return;
+
+                    workoutEntry.exercises.forEach(loggedExercise => {
+                        const state = exerciseStates[loggedExercise.name];
+                        const exerciseDef = workoutForHistory.exercises.find(e => e.name === loggedExercise.name);
+                        
+                        if (!state || !exerciseDef) return;
+
+                        const success = loggedExercise.reps.every(rep => rep >= loggedExercise.targetReps);
+
+                        if (success) {
+                            state.startingWeight = loggedExercise.weight + exerciseDef.progressionIncrement;
+                            state.consecutiveFailures = 0;
+                        } else {
+                            state.consecutiveFailures++;
+                            if (state.consecutiveFailures >= exerciseDef.deloadFrequency) {
+                                state.startingWeight = Math.round(loggedExercise.weight * (1 - exerciseDef.deloadPercentage / 100));
+                                state.consecutiveFailures = 0;
+                            } else {
+                                state.startingWeight = loggedExercise.weight;
+                            }
+                        }
+                    });
+                });
+
+                newPrograms.forEach(p => {
+                    p.workouts.forEach(w => {
+                        w.exercises.forEach(ex => {
+                            if (exerciseStates[ex.name]) {
+                                ex.startingWeight = exerciseStates[ex.name].startingWeight;
+                                ex.consecutiveFailures = exerciseStates[ex.name].consecutiveFailures;
+                            }
+                        });
+                    });
+                });
+
+                if (sortedHistory.length > 0) {
+                    const lastWorkout = sortedHistory[sortedHistory.length - 1];
+                    const lastProgram = newPrograms.find(p => p.id === lastWorkout.programId);
+                    if (lastProgram) {
+                        const lastWorkoutIndex = lastProgram.workouts.findIndex(w => w.id === lastWorkout.workoutId);
+                        if (lastWorkoutIndex !== -1 && lastProgram.workouts.length > 0) {
+                            lastProgram.currentWorkoutIndex = (lastWorkoutIndex + 1) % lastProgram.workouts.length;
+                        }
+                    }
+                } else {
+                    newPrograms.forEach(p => p.currentWorkoutIndex = 0);
+                }
+
+                return newPrograms;
             };
 
             const handleProgramUpdate = (newPrograms) => {
@@ -262,13 +345,62 @@
                 const newAppData = { ...appData, activeProgramId: programId };
                 updateFirestore(newAppData);
             };
+            
+            const handleLogWorkout = async () => {
+                const activeProgram = appData.programs.find(p => p.id === appData.activeProgramId);
+                const currentWorkout = activeProgram.workouts[activeProgram.currentWorkoutIndex || 0];
 
-            const activeProgram = appData?.programs.find(p => p.id === appData.activeProgramId);
+                const completedWorkout = {
+                    date: new Date(),
+                    programId: activeProgram.id,
+                    workoutId: currentWorkout.id,
+                    workoutName: currentWorkout.name,
+                    bodyweight: bodyweight || null,
+                    exercises: Object.entries(workoutProgress).map(([name, data]) => ({
+                        name,
+                        weight: data.weight,
+                        reps: data.reps.map(r => r === '' ? 0 : parseInt(r, 10)),
+                        targetReps: data.targetReps
+                    })),
+                };
 
-            if (loading) return <div className="flex justify-center items-center h-screen"><div className="text-xl text-gray-500">Loading...</div></div>;
-            if (!user) return <AuthPage auth={firebase.auth} />;
+                const updatedHistory = [...appData.history, completedWorkout];
+                const recalculatedPrograms = recalculateProgramState(appData.programs, updatedHistory);
+                
+                await updateFirestore({ ...appData, history: updatedHistory, programs: recalculatedPrograms });
+
+                setWorkoutProgress({});
+                setBodyweight('');
+                navigateTo('history');
+            };
+
+            const handleDeleteWorkout = async (workoutIndex) => {
+                if (window.confirm('Are you sure you want to delete this workout? This will recalculate your current progression.')) {
+                    const updatedHistory = appData.history.filter((_, i) => i !== workoutIndex);
+                    const recalculatedPrograms = recalculateProgramState(appData.programs, updatedHistory);
+                    await updateFirestore({ ...appData, history: updatedHistory, programs: recalculatedPrograms });
+                }
+            };
+
+            const handleUpdateHistory = async (updatedHistoryEntry, index) => {
+                const updatedHistory = [...appData.history];
+                updatedHistory[index] = updatedHistoryEntry;
+                const recalculatedPrograms = recalculateProgramState(appData.programs, updatedHistory);
+                await updateFirestore({ ...appData, history: updatedHistory, programs: recalculatedPrograms });
+            };
+            
+            const activeProgram = appData?.programs?.find(p => p.id === appData.activeProgramId);
+
+            if (user === undefined) return <LoadingScreen message="Authenticating..." />;
             if (error) return <div className="flex justify-center items-center h-screen"><div className="text-xl text-red-500 bg-red-100 p-8 rounded-lg">{error}</div></div>;
-            if (!appData || !activeProgram) return <div className="flex justify-center items-center h-screen"><div className="text-xl text-gray-500">Initializing Your Data...</div></div>;
+            if (!user) return <AuthPage auth={firebase.auth} />;
+            if (isDataLoading || !appData) return <LoadingScreen message="Loading Your Data..." />;
+            if (!activeProgram) {
+                 if(appData.programs && appData.programs.length > 0) {
+                    setActiveProgram(appData.programs[0].id);
+                 }
+                 return <LoadingScreen message="Setting Active Program..." />;
+            }
             
             const handleSignOut = async () => {
                 await signOut(firebase.auth);
@@ -280,9 +412,27 @@
                 switch (currentPage) {
                     case 'programs':
                         return <ProgramsListPage programs={appData.programs} activeProgramId={appData.activeProgramId} onUpdate={handleProgramUpdate} onSetActive={setActiveProgram} navigateTo={navigateTo} />;
-                    // Add more cases for editing specific programs/workouts later
+                    case 'logWorkout':
+                         return <LogWorkoutPage
+                            program={activeProgram}
+                            workoutProgress={workoutProgress}
+                            setWorkoutProgress={setWorkoutProgress}
+                            bodyweight={bodyweight}
+                            setBodyweight={setBodyweight}
+                            onLogWorkout={handleLogWorkout}
+                            navigateTo={navigateTo}
+                        />;
+                    case 'history':
+                        return <HistoryPage history={appData.history} onDeleteWorkout={handleDeleteWorkout} navigateTo={navigateTo} />;
+                    case 'editHistory':
+                        return <HistoryEditPage
+                            historyEntry={editingEntity.data}
+                            index={editingEntity.index}
+                            onSave={handleUpdateHistory}
+                            onCancel={() => navigateTo('history')}
+                        />;
                     default:
-                        return <HomePage program={activeProgram} onSignOut={handleSignOut} navigateTo={navigateTo} />;
+                        return <HomePage user={user} program={activeProgram} onSignOut={handleSignOut} navigateTo={navigateTo} />;
                 }
             };
 
@@ -296,34 +446,187 @@
         }
         
         // --- Page Components ---
-        const HomePage = ({ program, onSignOut, navigateTo }) => {
-            const currentWorkout = program.workouts[program.currentWorkoutIndex || 0];
+        const HomePage = ({ user, program, onSignOut, navigateTo }) => {
+            const currentWorkout = (program && Array.isArray(program.workouts) && program.workouts.length > 0) ? program.workouts[program.currentWorkoutIndex || 0] : null;
+            const userName = user.email.split('@')[0];
+            const capitalizedUserName = userName.charAt(0).toUpperCase() + userName.slice(1);
+
             return (
                 <div className="space-y-6">
                     <div className="flex justify-between items-center">
                         <div>
-                            <h2 className="text-3xl font-bold text-gray-800">Welcome!</h2>
+                            <h2 className="text-3xl font-bold text-gray-800">Welcome, {capitalizedUserName}!</h2>
                             <p className="text-gray-600">Active Program: <strong>{program.name}</strong></p>
                         </div>
                         <button onClick={onSignOut} className="bg-red-500 text-white font-semibold py-2 px-4 rounded-lg hover:bg-red-600 transition-colors">Sign Out</button>
                     </div>
                     <div className="bg-white p-6 rounded-xl shadow-md space-y-4">
-                        <p className="text-lg text-center">Your next workout is <strong>{currentWorkout?.name || 'No workout selected'}</strong>.</p>
-                        <button onClick={() => alert("Start workout not implemented yet")} className="w-full bg-indigo-600 text-white font-semibold py-3 px-6 rounded-lg shadow-lg hover:bg-indigo-700 transition-colors">
+                        <p className="text-lg text-center">Your next workout is <strong>{currentWorkout?.name || 'No workout in program'}</strong>.</p>
+                        <button onClick={() => navigateTo('logWorkout')} disabled={!currentWorkout} className="w-full bg-indigo-600 text-white font-semibold py-3 px-6 rounded-lg shadow-lg hover:bg-indigo-700 transition-colors disabled:bg-gray-300">
                             Start Workout
                         </button>
                     </div>
                     <div className="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4">
                         <button onClick={() => navigateTo('programs')} className="w-full bg-gray-200 text-gray-800 font-semibold py-3 px-6 rounded-lg hover:bg-gray-300 transition-colors">Manage Programs</button>
-                        <button onClick={() => alert("History not implemented yet")} className="w-full bg-gray-200 text-gray-800 font-semibold py-3 px-6 rounded-lg hover:bg-gray-300 transition-colors">View History</button>
+                        <button onClick={() => navigateTo('history')} className="w-full bg-gray-200 text-gray-800 font-semibold py-3 px-6 rounded-lg hover:bg-gray-300 transition-colors">View History</button>
                     </div>
                     <p className="text-sm text-center text-gray-500">Data is synced to the cloud in real-time.</p>
                 </div>
             );
         };
 
+        const LogWorkoutPage = ({ program, workoutProgress, setWorkoutProgress, bodyweight, setBodyweight, onLogWorkout, navigateTo }) => {
+            const currentWorkout = program.workouts[program.currentWorkoutIndex || 0];
+
+            useEffect(() => {
+                if(!currentWorkout) return;
+                const initialProgress = currentWorkout.exercises.reduce((acc, exercise) => {
+                    acc[exercise.name] = {
+                        weight: exercise.startingWeight,
+                        reps: Array(exercise.sets).fill(''),
+                        targetReps: exercise.reps
+                    };
+                    return acc;
+                }, {});
+                setWorkoutProgress(initialProgress);
+            }, [program]);
+            
+            const handleRepChange = (exerciseName, setIndex, newReps) => {
+                setWorkoutProgress(prev => ({
+                    ...prev,
+                    [exerciseName]: {
+                        ...prev[exerciseName],
+                        reps: prev[exerciseName].reps.map((r, i) => i === setIndex ? newReps : r)
+                    }
+                }));
+            };
+
+            if (!currentWorkout) {
+                return (
+                    <div className="space-y-6">
+                         <h2 className="text-3xl font-bold text-gray-800">No Workout</h2>
+                         <p>This program has no workouts. Go to "Manage Programs" to add one.</p>
+                         <button onClick={() => navigateTo('home')} className="w-full bg-gray-200 text-gray-800 font-semibold py-3 px-6 rounded-lg hover:bg-gray-300 transition-colors">Back to Home</button>
+                    </div>
+                )
+            }
+
+            const allSetsCompleted = currentWorkout.exercises.every(ex => {
+                const progress = workoutProgress[ex.name];
+                return progress && progress.reps.every(r => r !== '' && r !== null);
+            });
+
+            return (
+                <div className="space-y-6">
+                    <h2 className="text-3xl font-bold text-gray-800">Log: {currentWorkout.name}</h2>
+                    <div className="bg-white p-6 rounded-xl shadow-md space-y-6">
+                        <div>
+                            <label htmlFor="bodyweight" className="block text-sm font-medium text-gray-700">Bodyweight (lbs)</label>
+                            <input
+                                type="number"
+                                id="bodyweight"
+                                value={bodyweight}
+                                onChange={(e) => setBodyweight(e.target.value)}
+                                placeholder="e.g., 180"
+                                className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2"
+                            />
+                        </div>
+                        {currentWorkout.exercises.map((exercise, i) => (
+                            <div key={exercise.id} className="bg-gray-50 p-4 rounded-lg space-y-3">
+                                <h3 className="font-semibold text-lg">{exercise.name}</h3>
+                                <p className="text-sm text-gray-600">Target: {exercise.sets} sets of {exercise.reps} reps at {workoutProgress[exercise.name]?.weight || exercise.startingWeight} lbs</p>
+                                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
+                                    {Array.from({ length: exercise.sets }).map((_, setIndex) => (
+                                        <div key={setIndex} className="flex items-center space-x-2">
+                                            <label className="text-sm font-medium text-gray-700 whitespace-nowrap">Set {setIndex + 1}:</label>
+                                            <input
+                                                type="number"
+                                                value={workoutProgress[exercise.name]?.reps[setIndex] || ''}
+                                                onChange={(e) => handleRepChange(exercise.name, setIndex, e.target.value)}
+                                                placeholder={exercise.reps.toString()}
+                                                className="w-full rounded-lg border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2 text-center"
+                                            />
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        ))}
+                        <button
+                            onClick={onLogWorkout}
+                            disabled={!allSetsCompleted}
+                            className={`w-full font-semibold py-3 px-6 rounded-lg shadow-lg transition-colors ${allSetsCompleted ? 'bg-green-600 text-white hover:bg-green-700' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`}
+                        >
+                            Log Workout
+                        </button>
+                    </div>
+                    <button onClick={() => navigateTo('home')} className="w-full bg-gray-200 text-gray-800 font-semibold py-3 px-6 rounded-lg hover:bg-gray-300 transition-colors">Cancel</button>
+                </div>
+            );
+        };
+        
+        const HistoryPage = ({ history, onDeleteWorkout, navigateTo }) => (
+            <div className="space-y-6">
+                <h2 className="text-3xl font-bold text-gray-800">Workout History</h2>
+                <div className="bg-white p-6 rounded-xl shadow-md space-y-4">
+                    {history.length > 0 ? [...history].reverse().map((workout, i) => {
+                        const originalIndex = history.length - 1 - i;
+                        return(
+                            <div key={originalIndex} className="bg-gray-50 p-4 rounded-lg">
+                                <div className="flex justify-between items-start">
+                                    <div>
+                                        <p className="font-semibold text-lg">{workout.workoutName} &middot; {workout.date.toLocaleDateString()}</p>
+                                        <p className="text-sm text-gray-600 mb-2">Bodyweight: {workout.bodyweight ? `${workout.bodyweight} lbs` : 'N/A'}</p>
+                                        <ul className="list-disc list-inside mt-2 space-y-1 text-sm">
+                                            {workout.exercises.map((ex, j) => (
+                                                <li key={j}>
+                                                    <span className="font-medium">{ex.name}:</span> {ex.reps.join(', ')} reps at {ex.weight} lbs
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    </div>
+                                    <div className="flex flex-col space-y-2">
+                                        <button onClick={() => navigateTo('editHistory', { data: workout, index: originalIndex })} className="bg-blue-500 text-white font-semibold py-1 px-3 rounded-lg hover:bg-blue-600 transition-colors text-sm flex-shrink-0">Edit</button>
+                                        <button onClick={() => onDeleteWorkout(originalIndex)} className="bg-red-500 text-white font-semibold py-1 px-3 rounded-lg hover:bg-red-600 transition-colors text-sm flex-shrink-0">Delete</button>
+                                    </div>
+                                </div>
+                            </div>
+                        )
+                    }) : <p className="text-center text-gray-500">No workouts logged yet.</p>}
+                </div>
+                <button onClick={() => navigateTo('home')} className="w-full bg-gray-200 text-gray-800 font-semibold py-3 px-6 rounded-lg hover:bg-gray-300 transition-colors">Back to Home</button>
+            </div>
+        );
+        
         const ProgramsListPage = ({ programs, activeProgramId, onUpdate, onSetActive, navigateTo }) => {
+            const [localPrograms, setLocalPrograms] = useState(JSON.parse(JSON.stringify(programs)));
             const [editingProgram, setEditingProgram] = useState(null);
+            const dragItem = useRef();
+            const dragOverItem = useRef();
+
+            useEffect(() => {
+                setLocalPrograms(JSON.parse(JSON.stringify(programs)));
+            }, [programs]);
+
+            const handleDragStart = (e, position) => {
+                dragItem.current = position;
+                e.target.classList.add('dragging');
+            };
+
+            const handleDragEnter = (e, position) => {
+                dragOverItem.current = position;
+            };
+
+            const handleDrop = (e) => {
+                e.target.closest('.program-item').classList.remove('dragging');
+                const copyListItems = [...localPrograms];
+                const dragItemContent = copyListItems[dragItem.current];
+                copyListItems.splice(dragItem.current, 1);
+                copyListItems.splice(dragOverItem.current, 0, dragItemContent);
+                dragItem.current = null;
+                dragOverItem.current = null;
+                setLocalPrograms(copyListItems);
+                onUpdate(copyListItems); // Save order immediately
+            };
 
             const handleCreateProgram = () => {
                 const newProgramName = prompt("Enter new program name:");
@@ -356,8 +659,16 @@
                         <button onClick={() => navigateTo('home')} className="bg-gray-200 text-gray-800 font-semibold py-2 px-4 rounded-lg hover:bg-gray-300">Back to Home</button>
                     </div>
                     <div className="bg-white p-6 rounded-xl shadow-md space-y-4">
-                        {programs.map(program => (
-                            <div key={program.id} className="flex items-center justify-between p-4 rounded-lg bg-gray-50">
+                        {localPrograms.map((program, index) => (
+                            <div 
+                                key={program.id} 
+                                className="flex items-center justify-between p-4 rounded-lg bg-gray-50 program-item"
+                                draggable
+                                onDragStart={(e) => handleDragStart(e, index)}
+                                onDragEnter={(e) => handleDragEnter(e, index)}
+                                onDragEnd={handleDrop}
+                                onDragOver={(e) => e.preventDefault()}
+                            >
                                 <div>
                                     <p className="font-semibold text-lg">{program.name}</p>
                                     <p className="text-sm text-gray-500">{program.workouts.length} workouts</p>
@@ -387,6 +698,7 @@
 
         const ProgramEditPage = ({ program, onSave, onCancel }) => {
             const [localProgram, setLocalProgram] = useState(JSON.parse(JSON.stringify(program)));
+            const [editingWorkout, setEditingWorkout] = useState(null);
             const dragItem = useRef();
             const dragOverItem = useRef();
 
@@ -400,7 +712,7 @@
             };
 
             const handleDrop = (e) => {
-                e.target.closest('.exercise-item').classList.remove('dragging');
+                e.target.closest('.workout-item').classList.remove('dragging');
                 const copyListItems = [...localProgram.workouts];
                 const dragItemContent = copyListItems[dragItem.current];
                 copyListItems.splice(dragItem.current, 1);
@@ -409,6 +721,18 @@
                 dragOverItem.current = null;
                 setLocalProgram({...localProgram, workouts: copyListItems });
             };
+            
+            if(editingWorkout) {
+                return <WorkoutEditPage 
+                    workout={editingWorkout}
+                    onSave={(updatedWorkout) => {
+                        const newWorkouts = localProgram.workouts.map(w => w.id === updatedWorkout.id ? updatedWorkout : w);
+                        setLocalProgram({...localProgram, workouts: newWorkouts});
+                        setEditingWorkout(null);
+                    }}
+                    onCancel={() => setEditingWorkout(null)}
+                />
+            }
 
             const handleAddWorkout = () => {
                 const workoutName = prompt("Enter new workout name:");
@@ -433,19 +757,30 @@
                         />
                     </div>
                     <div className="bg-white p-6 rounded-xl shadow-md space-y-4">
+                        <h3 className="text-xl font-semibold">Workouts</h3>
                         {localProgram.workouts.map((workout, index) => (
                             <div 
                                 key={workout.id} 
-                                className="p-4 rounded-lg bg-gray-50 exercise-item"
+                                className="p-4 rounded-lg bg-gray-50 flex justify-between items-center workout-item"
                                 draggable
                                 onDragStart={(e) => handleDragStart(e, index)}
                                 onDragEnter={(e) => handleDragEnter(e, index)}
                                 onDragEnd={handleDrop}
                                 onDragOver={(e) => e.preventDefault()}
                             >
-                                <p className="font-semibold">{workout.name}</p>
-                                <p className="text-sm text-gray-500">{workout.exercises.length} exercises</p>
-                                {/* Add edit/delete for workouts here later */}
+                               <div>
+                                 <p className="font-semibold">{workout.name}</p>
+                                 <p className="text-sm text-gray-500">{workout.exercises.length} exercises</p>
+                               </div>
+                               <div className="space-x-2">
+                                    <button onClick={() => setEditingWorkout(workout)} className="bg-blue-500 text-white font-semibold py-1 px-3 rounded-lg hover:bg-blue-600 text-sm">Edit Exercises</button>
+                                    <button onClick={() => {
+                                        if(confirm(`Delete "${workout.name}"?`)) {
+                                            const newWorkouts = localProgram.workouts.filter(w => w.id !== workout.id);
+                                            setLocalProgram({...localProgram, workouts: newWorkouts});
+                                        }
+                                    }} className="bg-red-500 text-white font-semibold py-1 px-3 rounded-lg hover:bg-red-600 text-sm">Delete</button>
+                               </div>
                             </div>
                         ))}
                          <button onClick={handleAddWorkout} className="w-full bg-green-500 text-white font-semibold py-2 px-4 rounded-lg hover:bg-green-600">Add Workout</button>
@@ -457,7 +792,189 @@
                 </div>
             )
         };
+        
+        const WorkoutEditPage = ({ workout, onSave, onCancel }) => {
+            const [localWorkout, setLocalWorkout] = useState(JSON.parse(JSON.stringify(workout)));
+            const dragItem = useRef();
+            const dragOverItem = useRef();
 
+            const handleDragStart = (e, position) => {
+                dragItem.current = position;
+                e.target.classList.add('dragging');
+            };
+
+            const handleDragEnter = (e, position) => {
+                dragOverItem.current = position;
+            };
+
+            const handleDrop = (e) => {
+                e.target.closest('.exercise-item').classList.remove('dragging');
+                const copyListItems = [...localWorkout.exercises];
+                const dragItemContent = copyListItems[dragItem.current];
+                copyListItems.splice(dragItem.current, 1);
+                copyListItems.splice(dragOverItem.current, 0, dragItemContent);
+                dragItem.current = null;
+                dragOverItem.current = null;
+                setLocalWorkout({...localWorkout, exercises: copyListItems });
+            };
+
+            const handleExerciseChange = (exIndex, field, value) => {
+                const newExercises = [...localWorkout.exercises];
+                newExercises[exIndex][field] = field === 'name' ? value : Number(value);
+                setLocalWorkout({...localWorkout, exercises: newExercises});
+            };
+
+            const handleAddExercise = () => {
+                const newExercise = { id: `ex_${Date.now()}`, name: 'New Exercise', sets: 3, reps: 8, progressionIncrement: 5, deloadFrequency: 3, deloadPercentage: 10, baseWeight: 45, startingWeight: 45, consecutiveFailures: 0 };
+                setLocalWorkout({...localWorkout, exercises: [...localWorkout.exercises, newExercise]});
+            };
+
+            const fieldsToEdit = ['baseWeight', 'sets', 'reps', 'progressionIncrement', 'deloadFrequency', 'deloadPercentage'];
+
+            return (
+                 <div className="space-y-6">
+                    <input 
+                        type="text" 
+                        value={localWorkout.name} 
+                        onChange={(e) => setLocalWorkout({...localWorkout, name: e.target.value})}
+                        className="text-3xl font-bold text-gray-800 p-1 -m-1 rounded bg-transparent"
+                    />
+                    <div className="bg-white p-6 rounded-xl shadow-md space-y-4">
+                        {localWorkout.exercises.map((ex, i) => (
+                            <div key={ex.id} className="bg-gray-50 p-4 rounded-lg space-y-4 exercise-item"
+                                draggable
+                                onDragStart={(e) => handleDragStart(e, i)}
+                                onDragEnter={(e) => handleDragEnter(e, i)}
+                                onDragEnd={handleDrop}
+                                onDragOver={(e) => e.preventDefault()}
+                            >
+                                <div className="flex justify-between items-center">
+                                    <input type="text" value={ex.name} onChange={e => handleExerciseChange(i, 'name', e.target.value)} className="font-semibold text-lg p-1 -m-1 rounded bg-transparent w-full" />
+                                    <button onClick={() => {
+                                        if(confirm("Delete this exercise?")) {
+                                            const newExercises = localWorkout.exercises.filter(e => e.id !== ex.id);
+                                            setLocalWorkout({...localWorkout, exercises: newExercises});
+                                        }
+                                    }} className="bg-red-500 text-white font-semibold py-1 px-3 rounded-lg hover:bg-red-600 text-sm flex-shrink-0 ml-4">Remove</button>
+                                </div>
+                                <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
+                                    {fieldsToEdit.map(field => (
+                                        <div key={field}>
+                                            <label className="block font-medium text-gray-700 capitalize">{field.replace(/([A-Z])/g, ' $1').trim()}</label>
+                                            <input type="number" value={ex[field]} onChange={e => handleExerciseChange(i, field, e.target.value)} className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-2" />
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        ))}
+                        <button onClick={handleAddExercise} className="w-full bg-green-500 text-white font-semibold py-2 px-4 rounded-lg hover:bg-green-600">Add Exercise</button>
+                    </div>
+                     <div className="flex space-x-2">
+                         <button onClick={() => onSave(localWorkout)} className="w-full bg-indigo-600 text-white font-semibold py-3 px-6 rounded-lg shadow-lg hover:bg-indigo-700">Save Workout</button>
+                         <button onClick={onCancel} className="w-full bg-gray-200 text-gray-800 font-semibold py-3 px-6 rounded-lg hover:bg-gray-300">Back to Program</button>
+                    </div>
+                </div>
+            )
+        };
+
+        const HistoryEditPage = ({ historyEntry, index, onSave, onCancel }) => {
+            const [localEntry, setLocalEntry] = useState(JSON.parse(JSON.stringify(historyEntry)));
+
+            const handleFieldChange = (field, value) => {
+                setLocalEntry({...localEntry, [field]: value});
+            };
+
+            const handleExerciseChange = (exIndex, field, value) => {
+                const newExercises = [...localEntry.exercises];
+                newExercises[exIndex][field] = value;
+                setLocalEntry({...localEntry, exercises: newExercises});
+            };
+            
+            const handleSave = () => {
+                const dateStr = localEntry.date.split('T')[0];
+                const parts = dateStr.split('-');
+                const dateInLocalTime = new Date(parts[0], parts[1] - 1, parts[2]);
+
+                const finalEntry = {
+                    ...localEntry,
+                    date: dateInLocalTime,
+                    exercises: localEntry.exercises.map(ex => ({
+                        ...ex,
+                        reps: ex.reps.map(r => Number(r)),
+                        weight: Number(ex.weight)
+                    }))
+                };
+                onSave(finalEntry, index);
+                onCancel();
+            };
+
+            return (
+                <div className="space-y-6">
+                    <h2 className="text-3xl font-bold text-gray-800">Edit Workout Log</h2>
+                    <div className="bg-white p-6 rounded-xl shadow-md space-y-6">
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700">Date</label>
+                            <input 
+                                type="date" 
+                                value={new Date(localEntry.date).toISOString().split('T')[0]}
+                                onChange={e => handleFieldChange('date', e.target.value)}
+                                className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-2"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700">Bodyweight (lbs)</label>
+                            <input
+                                type="number"
+                                value={localEntry.bodyweight || ''}
+                                onChange={(e) => handleFieldChange('bodyweight', e.target.value)}
+                                placeholder="e.g., 180"
+                                className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-2"
+                            />
+                        </div>
+                        {localEntry.exercises.map((ex, i) => (
+                             <div key={i} className="bg-gray-50 p-4 rounded-lg space-y-3">
+                                <input 
+                                    type="text" 
+                                    value={ex.name}
+                                    onChange={e => handleExerciseChange(i, 'name', e.target.value)}
+                                    className="font-semibold text-lg p-1 -m-1 rounded bg-transparent w-full"
+                                />
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700">Weight</label>
+                                    <input 
+                                        type="number"
+                                        value={ex.weight}
+                                        onChange={e => handleExerciseChange(i, 'weight', e.target.value)}
+                                        className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-2"
+                                    />
+                                </div>
+                                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
+                                    {ex.reps.map((rep, setIndex) => (
+                                        <div key={setIndex} className="flex items-center space-x-2">
+                                            <label className="text-sm font-medium text-gray-700 whitespace-nowrap">Set {setIndex + 1}:</label>
+                                            <input
+                                                type="number"
+                                                value={rep}
+                                                onChange={(e) => {
+                                                    const newReps = [...ex.reps];
+                                                    newReps[setIndex] = e.target.value;
+                                                    handleExerciseChange(i, 'reps', newReps);
+                                                }}
+                                                className="w-full rounded-lg border-gray-300 shadow-sm p-2 text-center"
+                                            />
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                    <div className="flex space-x-2">
+                         <button onClick={handleSave} className="w-full bg-indigo-600 text-white font-semibold py-3 px-6 rounded-lg shadow-lg hover:bg-indigo-700">Save History</button>
+                         <button onClick={onCancel} className="w-full bg-gray-200 text-gray-800 font-semibold py-3 px-6 rounded-lg hover:bg-gray-300">Cancel</button>
+                    </div>
+                </div>
+            );
+        };
 
         // --- Render the App ---
         const container = document.getElementById('root');
