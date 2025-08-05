@@ -59,20 +59,18 @@
                     id: `workout_${Date.now()}_a`,
                     name: 'Workout A',
                     exercises: [
-                        { id: `ex_${Date.now()}_1`, name: 'Leg Press', sets: 5, reps: 5, progressionIncrement: 10, deloadFrequency: 3, deloadPercentage: 10, baseWeight: 90, startingWeight: 90, consecutiveFailures: 0 },
-                        { id: `ex_${Date.now()}_2`, name: 'Machine Chest Press', sets: 5, reps: 5, progressionIncrement: 2.5, deloadFrequency: 3, deloadPercentage: 10, baseWeight: 45, startingWeight: 45, consecutiveFailures: 0 },
-                        { id: `ex_${Date.now()}_3`, name: 'Seated Cable Row', sets: 5, reps: 5, progressionIncrement: 2.5, deloadFrequency: 3, deloadPercentage: 10, baseWeight: 45, startingWeight: 45, consecutiveFailures: 0 },
+                        { 
+                            id: `ex_${Date.now()}_1`, name: 'Leg Press', baseWeight: 90, progressionIncrement: 10, deloadFrequency: 3, deloadPercentage: 10, consecutiveFailures: 0,
+                            sets: [
+                                { id: `set_${Date.now()}_1`, type: 'working', targetReps: 5, targetWeight: 90 },
+                                { id: `set_${Date.now()}_2`, type: 'working', targetReps: 5, targetWeight: 90 },
+                                { id: `set_${Date.now()}_3`, type: 'working', targetReps: 5, targetWeight: 90 },
+                                { id: `set_${Date.now()}_4`, type: 'working', targetReps: 5, targetWeight: 90 },
+                                { id: `set_${Date.now()}_5`, type: 'working', targetReps: 5, targetWeight: 90 },
+                            ]
+                        },
                     ]
                 },
-                {
-                    id: `workout_${Date.now()}_b`,
-                    name: 'Workout B',
-                    exercises: [
-                        { id: `ex_${Date.now()}_4`, name: 'Hack Squat', sets: 5, reps: 5, progressionIncrement: 5, deloadFrequency: 3, deloadPercentage: 10, baseWeight: 90, startingWeight: 90, consecutiveFailures: 0 },
-                        { id: `ex_${Date.now()}_5`, name: 'Machine Shoulder Press', sets: 5, reps: 5, progressionIncrement: 2.5, deloadFrequency: 3, deloadPercentage: 10, baseWeight: 45, startingWeight: 45, consecutiveFailures: 0 },
-                        { id: `ex_${Date.now()}_6`, name: 'Hamstring Curls', sets: 3, reps: 8, progressionIncrement: 2.5, deloadFrequency: 3, deloadPercentage: 10, baseWeight: 45, startingWeight: 45, consecutiveFailures: 0 },
-                    ]
-                }
             ],
             currentWorkoutIndex: 0
         });
@@ -154,7 +152,7 @@
         };
 
         const App = () => {
-            const [user, setUser] = useState(undefined); // undefined: checking, null: logged out, object: logged in
+            const [user, setUser] = useState(undefined);
             const [appData, setAppData] = useState(null);
             const [currentPage, setCurrentPage] = useState('home');
             const [workoutProgress, setWorkoutProgress] = useState({});
@@ -162,7 +160,7 @@
             const [error, setError] = useState(null);
             const [firebase, setFirebase] = useState({ auth: null, db: null });
             const [isDataLoading, setIsDataLoading] = useState(true);
-            const [editingEntity, setEditingEntity] = useState(null); // { type: 'program'/'workout'/'history', data: {...} }
+            const [editingEntity, setEditingEntity] = useState(null);
 
             useEffect(() => {
                 try {
@@ -205,23 +203,6 @@
                     if (docSnap.exists()) {
                         let data = docSnap.data();
                         
-                        if (data.program && !data.programs) {
-                            console.log("Migrating old data structure...");
-                            const legacyProgram = createDefaultProgram();
-                            legacyProgram.name = "My Legacy Program";
-                            legacyProgram.workouts[0].exercises = data.program.workoutA.exercises.map((ex, i) => ({...ex, id: `ex_${Date.now()}_${i}`}));
-                            legacyProgram.workouts[1].exercises = data.program.workoutB.exercises.map((ex, i) => ({...ex, id: `ex_${Date.now()}_b_${i}`}));
-                            
-                            const newData = {
-                                programs: [legacyProgram],
-                                activeProgramId: legacyProgram.id,
-                                history: data.history || []
-                            };
-                            
-                            setDoc(docRef, newData);
-                            return;
-                        }
-
                         if (data.history) {
                             data.history.forEach(item => {
                                 if (item.date && typeof item.date.toDate === 'function') {
@@ -269,7 +250,7 @@
                         w.exercises.forEach(ex => {
                             if (!exerciseStates[ex.name]) {
                                 exerciseStates[ex.name] = {
-                                    startingWeight: ex.baseWeight,
+                                    sets: JSON.parse(JSON.stringify(ex.sets)), // Deep copy
                                     consecutiveFailures: 0,
                                 };
                             }
@@ -286,24 +267,39 @@
                     const workoutForHistory = programForHistory.workouts.find(w => w.id === workoutEntry.workoutId);
                     if (!workoutForHistory) return;
 
-                    workoutEntry.exercises.forEach(loggedExercise => {
-                        const state = exerciseStates[loggedExercise.name];
-                        const exerciseDef = workoutForHistory.exercises.find(e => e.name === loggedExercise.name);
+                    workoutEntry.exercises.forEach(loggedEx => {
+                        const programEx = workoutForHistory.exercises.find(e => e.name === loggedEx.name);
+                        if (!programEx) return;
+
+                        const state = exerciseStates[loggedEx.name];
+                        if (!state) return;
+
+                        const workingSetsLogged = loggedEx.sets ? loggedEx.sets.filter(s => s.type === 'working') : [];
+                        if (workingSetsLogged.length === 0) return;
                         
-                        if (!state || !exerciseDef) return;
+                        const targetRepsForSuccess = programEx.sets.find(s => s.type === 'working')?.targetReps || 5;
+                        const success = workingSetsLogged.every(s => s.actualReps >= targetRepsForSuccess);
 
-                        const success = loggedExercise.reps.every(rep => rep >= loggedExercise.targetReps);
-
-                        if (success) {
-                            state.startingWeight = loggedExercise.weight + exerciseDef.progressionIncrement;
-                            state.consecutiveFailures = 0;
-                        } else {
-                            state.consecutiveFailures++;
-                            if (state.consecutiveFailures >= exerciseDef.deloadFrequency) {
-                                state.startingWeight = Math.round(loggedExercise.weight * (1 - exerciseDef.deloadPercentage / 100));
+                        if (programEx.progressionIncrement > 0) {
+                            if (success) {
                                 state.consecutiveFailures = 0;
+                                state.sets.forEach((set, index) => {
+                                    if (set.type === 'working') {
+                                        const loggedSet = workingSetsLogged[index] || workingSetsLogged[workingSetsLogged.length - 1];
+                                        set.targetWeight = loggedSet.actualWeight + programEx.progressionIncrement;
+                                    }
+                                });
                             } else {
-                                state.startingWeight = loggedExercise.weight;
+                                state.consecutiveFailures++;
+                                if (state.consecutiveFailures >= programEx.deloadFrequency) {
+                                    const lastWorkingSetWeight = workingSetsLogged[workingSetsLogged.length - 1].actualWeight;
+                                    state.sets.forEach((set, index) => {
+                                        if (set.type === 'working') {
+                                            set.targetWeight = Math.round(lastWorkingSetWeight * (1 - programEx.deloadPercentage / 100));
+                                        }
+                                    });
+                                    state.consecutiveFailures = 0;
+                                }
                             }
                         }
                     });
@@ -313,8 +309,8 @@
                     p.workouts.forEach(w => {
                         w.exercises.forEach(ex => {
                             if (exerciseStates[ex.name]) {
-                                ex.startingWeight = exerciseStates[ex.name].startingWeight;
                                 ex.consecutiveFailures = exerciseStates[ex.name].consecutiveFailures;
+                                ex.sets = exerciseStates[ex.name].sets;
                             }
                         });
                     });
@@ -356,12 +352,7 @@
                     workoutId: currentWorkout.id,
                     workoutName: currentWorkout.name,
                     bodyweight: bodyweight || null,
-                    exercises: Object.entries(workoutProgress).map(([name, data]) => ({
-                        name,
-                        weight: data.weight,
-                        reps: data.reps.map(r => r === '' ? 0 : parseInt(r, 10)),
-                        targetReps: data.targetReps
-                    })),
+                    exercises: Object.values(workoutProgress),
                 };
 
                 const updatedHistory = [...appData.history, completedWorkout];
@@ -376,9 +367,14 @@
 
             const handleDeleteWorkout = async (workoutIndex) => {
                 if (window.confirm('Are you sure you want to delete this workout? This will recalculate your current progression.')) {
-                    const updatedHistory = appData.history.filter((_, i) => i !== workoutIndex);
-                    const recalculatedPrograms = recalculateProgramState(appData.programs, updatedHistory);
-                    await updateFirestore({ ...appData, history: updatedHistory, programs: recalculatedPrograms });
+                    try {
+                        const updatedHistory = appData.history.filter((_, i) => i !== workoutIndex);
+                        const recalculatedPrograms = recalculateProgramState(appData.programs, updatedHistory);
+                        await updateFirestore({ ...appData, history: updatedHistory, programs: recalculatedPrograms });
+                    } catch (e) {
+                        console.error("Error deleting workout:", e);
+                        setError("Could not delete workout history.");
+                    }
                 }
             };
 
@@ -481,24 +477,17 @@
             useEffect(() => {
                 if(!currentWorkout) return;
                 const initialProgress = currentWorkout.exercises.reduce((acc, exercise) => {
-                    acc[exercise.name] = {
-                        weight: exercise.startingWeight,
-                        reps: Array(exercise.sets).fill(''),
-                        targetReps: exercise.reps
-                    };
+                    const setsProgress = exercise.sets.map(set => ({...set, actualReps: '', actualWeight: set.targetWeight}));
+                    acc[exercise.id] = { name: exercise.name, sets: setsProgress, targetReps: exercise.sets.find(s=>s.type==='working')?.targetReps || 5 };
                     return acc;
                 }, {});
                 setWorkoutProgress(initialProgress);
             }, [program]);
             
-            const handleRepChange = (exerciseName, setIndex, newReps) => {
-                setWorkoutProgress(prev => ({
-                    ...prev,
-                    [exerciseName]: {
-                        ...prev[exerciseName],
-                        reps: prev[exerciseName].reps.map((r, i) => i === setIndex ? newReps : r)
-                    }
-                }));
+            const handleSetChange = (exId, setIndex, field, value) => {
+                const newProgress = {...workoutProgress};
+                newProgress[exId].sets[setIndex][field] = value;
+                setWorkoutProgress(newProgress);
             };
 
             if (!currentWorkout) {
@@ -511,10 +500,7 @@
                 )
             }
 
-            const allSetsCompleted = currentWorkout.exercises.every(ex => {
-                const progress = workoutProgress[ex.name];
-                return progress && progress.reps.every(r => r !== '' && r !== null);
-            });
+            const allSetsCompleted = Object.values(workoutProgress).every(ex => ex.sets && ex.sets.every(s => s.actualReps !== ''));
 
             return (
                 <div className="space-y-6">
@@ -534,21 +520,17 @@
                         {currentWorkout.exercises.map((exercise, i) => (
                             <div key={exercise.id} className="bg-gray-50 p-4 rounded-lg space-y-3">
                                 <h3 className="font-semibold text-lg">{exercise.name}</h3>
-                                <p className="text-sm text-gray-600">Target: {exercise.sets} sets of {exercise.reps} reps at {workoutProgress[exercise.name]?.weight || exercise.startingWeight} lbs</p>
-                                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
-                                    {Array.from({ length: exercise.sets }).map((_, setIndex) => (
-                                        <div key={setIndex} className="flex items-center space-x-2">
-                                            <label className="text-sm font-medium text-gray-700 whitespace-nowrap">Set {setIndex + 1}:</label>
-                                            <input
-                                                type="number"
-                                                value={workoutProgress[exercise.name]?.reps[setIndex] || ''}
-                                                onChange={(e) => handleRepChange(exercise.name, setIndex, e.target.value)}
-                                                placeholder={exercise.reps.toString()}
-                                                className="w-full rounded-lg border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2 text-center"
-                                            />
+                                {exercise.sets.map((set, setIndex) => (
+                                    <div key={set.id} className={`flex items-center space-x-4 p-2 rounded-lg ${set.type === 'warmup' ? 'bg-gray-200' : 'bg-white'}`}>
+                                        <span className="font-medium text-gray-600 w-16">Set {setIndex + 1} {set.type === 'warmup' && '(W)'}</span>
+                                        <div className="flex items-center space-x-2">
+                                            <input type="number" value={workoutProgress[exercise.id]?.sets[setIndex]?.actualReps || ''} onChange={e => handleSetChange(exercise.id, setIndex, 'actualReps', e.target.value)} className="w-20 p-2 text-center rounded-lg border-gray-300" placeholder={set.targetReps} />
+                                            <span>reps @</span>
+                                            <input type="number" value={workoutProgress[exercise.id]?.sets[setIndex]?.actualWeight || ''} onChange={e => handleSetChange(exercise.id, setIndex, 'actualWeight', e.target.value)} className="w-20 p-2 text-center rounded-lg border-gray-300" placeholder={set.targetWeight} />
+                                            <span>lbs</span>
                                         </div>
-                                    ))}
-                                </div>
+                                    </div>
+                                ))}
                             </div>
                         ))}
                         <button
@@ -576,10 +558,17 @@
                                     <div>
                                         <p className="font-semibold text-lg">{workout.workoutName} &middot; {workout.date.toLocaleDateString()}</p>
                                         <p className="text-sm text-gray-600 mb-2">Bodyweight: {workout.bodyweight ? `${workout.bodyweight} lbs` : 'N/A'}</p>
-                                        <ul className="list-disc list-inside mt-2 space-y-1 text-sm">
-                                            {workout.exercises.map((ex, j) => (
+                                        <ul className="mt-2 space-y-2 text-sm">
+                                            {workout.exercises && workout.exercises.map((ex, j) => (
                                                 <li key={j}>
-                                                    <span className="font-medium">{ex.name}:</span> {ex.reps.join(', ')} reps at {ex.weight} lbs
+                                                    <p className="font-medium">{ex.name}</p>
+                                                    <ul className="pl-4 list-disc list-inside">
+                                                        {ex.sets && ex.sets.map((set, k) => (
+                                                            <li key={k}>
+                                                                {set.actualReps} reps @ {set.actualWeight} lbs {set.type === 'warmup' && '(Warm-up)'}
+                                                            </li>
+                                                        ))}
+                                                    </ul>
                                                 </li>
                                             ))}
                                         </ul>
@@ -824,12 +813,40 @@
                 setLocalWorkout({...localWorkout, exercises: newExercises});
             };
 
-            const handleAddExercise = () => {
-                const newExercise = { id: `ex_${Date.now()}`, name: 'New Exercise', sets: 3, reps: 8, progressionIncrement: 5, deloadFrequency: 3, deloadPercentage: 10, baseWeight: 45, startingWeight: 45, consecutiveFailures: 0 };
-                setLocalWorkout({...localWorkout, exercises: [...localWorkout.exercises, newExercise]});
+            const handleSetChange = (exIndex, setIndex, field, value) => {
+                const newExercises = [...localWorkout.exercises];
+                newExercises[exIndex].sets[setIndex][field] = field === 'type' ? value : Number(value);
+                setLocalWorkout({...localWorkout, exercises: newExercises});
             };
 
-            const fieldsToEdit = ['baseWeight', 'sets', 'reps', 'progressionIncrement', 'deloadFrequency', 'deloadPercentage'];
+            const handleAddSet = (exIndex) => {
+                const newExercises = [...localWorkout.exercises];
+                const lastSet = newExercises[exIndex].sets[newExercises[exIndex].sets.length - 1] || { type: 'working', targetReps: 5, targetWeight: 45 };
+                newExercises[exIndex].sets.push({ id: `set_${Date.now()}`, ...lastSet });
+                setLocalWorkout({...localWorkout, exercises: newExercises});
+            };
+
+            const handleRemoveSet = (exIndex, setIndex) => {
+                const newExercises = [...localWorkout.exercises];
+                newExercises[exIndex].sets.splice(setIndex, 1);
+                setLocalWorkout({...localWorkout, exercises: newExercises});
+            };
+
+            const handleAddExercise = () => {
+                const newExercise = { id: `ex_${Date.now()}`, name: 'New Exercise', baseWeight: 45, progressionIncrement: 5, deloadFrequency: 3, deloadPercentage: 10, consecutiveFailures: 0, sets: [{id: `set_${Date.now()}`, type: 'working', targetReps: 5, targetWeight: 45}] };
+                setLocalWorkout({...localWorkout, exercises: [...localWorkout.exercises, newExercise]});
+            };
+            
+            const handleRemoveExercise = (exerciseId) => {
+                if (confirm("Delete this exercise?")) {
+                    setLocalWorkout(prevWorkout => ({
+                        ...prevWorkout,
+                        exercises: prevWorkout.exercises.filter(ex => ex.id !== exerciseId)
+                    }));
+                }
+            };
+
+            const fieldsToEdit = ['progressionIncrement', 'deloadFrequency', 'deloadPercentage', 'baseWeight'];
 
             return (
                  <div className="space-y-6">
@@ -850,18 +867,27 @@
                             >
                                 <div className="flex justify-between items-center">
                                     <input type="text" value={ex.name} onChange={e => handleExerciseChange(i, 'name', e.target.value)} className="font-semibold text-lg p-1 -m-1 rounded bg-transparent w-full" />
-                                    <button onClick={() => {
-                                        if(confirm("Delete this exercise?")) {
-                                            const newExercises = localWorkout.exercises.filter(e => e.id !== ex.id);
-                                            setLocalWorkout({...localWorkout, exercises: newExercises});
-                                        }
-                                    }} className="bg-red-500 text-white font-semibold py-1 px-3 rounded-lg hover:bg-red-600 text-sm flex-shrink-0 ml-4">Remove</button>
+                                    <button onClick={() => handleRemoveExercise(ex.id)} className="bg-red-500 text-white font-semibold py-1 px-3 rounded-lg hover:bg-red-600 text-sm flex-shrink-0 ml-4">Remove</button>
                                 </div>
-                                <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
-                                    {fieldsToEdit.map(field => (
+                                <div className="space-y-2">
+                                    {ex.sets.map((set, setIndex) => (
+                                        <div key={set.id} className={`flex items-center space-x-2 p-2 rounded-lg ${set.type === 'warmup' ? 'bg-gray-200' : 'bg-white'}`}>
+                                            <span className="font-medium text-gray-600">Set {setIndex + 1}:</span>
+                                            <input type="number" value={set.targetReps} onChange={e => handleSetChange(i, setIndex, 'targetReps', e.target.value)} className="w-16 p-1 text-center rounded border-gray-300" />
+                                            <span>reps @</span>
+                                            <input type="number" value={set.targetWeight} onChange={e => handleSetChange(i, setIndex, 'targetWeight', e.target.value)} className="w-20 p-1 text-center rounded border-gray-300" />
+                                            <span>lbs</span>
+                                            <button onClick={() => handleSetChange(i, setIndex, 'type', set.type === 'warmup' ? 'working' : 'warmup')} className="text-xs px-2 py-1 rounded bg-gray-300 hover:bg-gray-400">{set.type === 'warmup' ? 'Warmup' : 'Working'}</button>
+                                            <button onClick={() => handleRemoveSet(i, setIndex)} className="text-red-500 hover:text-red-700 text-xs">Remove</button>
+                                        </div>
+                                    ))}
+                                    <button onClick={() => handleAddSet(i)} className="text-sm text-indigo-600 hover:text-indigo-800 font-semibold">Add Set</button>
+                                </div>
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm pt-2 border-t">
+                                     {fieldsToEdit.map(field => (
                                         <div key={field}>
-                                            <label className="block font-medium text-gray-700 capitalize">{field.replace(/([A-Z])/g, ' $1').trim()}</label>
-                                            <input type="number" value={ex[field]} onChange={e => handleExerciseChange(i, field, e.target.value)} className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-2" />
+                                            <label className="block font-medium text-gray-700 capitalize text-xs">{field.replace(/([A-Z])/g, ' $1').trim()}</label>
+                                            <input type="number" value={ex[field]} onChange={e => handleExerciseChange(i, field, e.target.value)} className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-1" />
                                         </div>
                                     ))}
                                 </div>
@@ -890,6 +916,12 @@
                 setLocalEntry({...localEntry, exercises: newExercises});
             };
             
+            const handleSetChange = (exIndex, setIndex, field, value) => {
+                const newExercises = [...localEntry.exercises];
+                newExercises[exIndex].sets[setIndex][field] = value;
+                setLocalEntry({...localEntry, exercises: newExercises});
+            };
+
             const handleSave = () => {
                 const dateStr = localEntry.date.split('T')[0];
                 const parts = dateStr.split('-');
@@ -900,8 +932,11 @@
                     date: dateInLocalTime,
                     exercises: localEntry.exercises.map(ex => ({
                         ...ex,
-                        reps: ex.reps.map(r => Number(r)),
-                        weight: Number(ex.weight)
+                        sets: ex.sets.map(s => ({
+                            ...s,
+                            actualReps: Number(s.actualReps),
+                            actualWeight: Number(s.actualWeight)
+                        }))
                     }))
                 };
                 onSave(finalEntry, index);
@@ -939,32 +974,15 @@
                                     onChange={e => handleExerciseChange(i, 'name', e.target.value)}
                                     className="font-semibold text-lg p-1 -m-1 rounded bg-transparent w-full"
                                 />
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-700">Weight</label>
-                                    <input 
-                                        type="number"
-                                        value={ex.weight}
-                                        onChange={e => handleExerciseChange(i, 'weight', e.target.value)}
-                                        className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-2"
-                                    />
-                                </div>
-                                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
-                                    {ex.reps.map((rep, setIndex) => (
-                                        <div key={setIndex} className="flex items-center space-x-2">
-                                            <label className="text-sm font-medium text-gray-700 whitespace-nowrap">Set {setIndex + 1}:</label>
-                                            <input
-                                                type="number"
-                                                value={rep}
-                                                onChange={(e) => {
-                                                    const newReps = [...ex.reps];
-                                                    newReps[setIndex] = e.target.value;
-                                                    handleExerciseChange(i, 'reps', newReps);
-                                                }}
-                                                className="w-full rounded-lg border-gray-300 shadow-sm p-2 text-center"
-                                            />
-                                        </div>
-                                    ))}
-                                </div>
+                                {ex.sets.map((set, setIndex) => (
+                                    <div key={setIndex} className="flex items-center space-x-2">
+                                        <span className="font-medium text-gray-600">Set {setIndex + 1}:</span>
+                                        <input type="number" value={set.actualReps} onChange={e => handleSetChange(i, setIndex, 'actualReps', e.target.value)} className="w-16 p-1 text-center rounded border-gray-300" />
+                                        <span>reps @</span>
+                                        <input type="number" value={set.actualWeight} onChange={e => handleSetChange(i, setIndex, 'actualWeight', e.target.value)} className="w-20 p-1 text-center rounded border-gray-300" />
+                                        <span>lbs</span>
+                                    </div>
+                                ))}
                             </div>
                         ))}
                     </div>
